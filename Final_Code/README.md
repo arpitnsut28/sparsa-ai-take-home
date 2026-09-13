@@ -5,7 +5,7 @@ the pages, synthesises a brief with an LLM, and records the run's KPIs. Runs are
 slow, so `POST /runs` returns a `run_id` immediately and the page polls
 `GET /runs/{run_id}` until the run reaches a terminal state.
 
-The scrape and LLM calls are stubbed — no API keys, no network needed.
+The scrape and LLM calls are stubbed  no API keys, no network needed.
 
 ---
 
