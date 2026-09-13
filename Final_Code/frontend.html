@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Research Runs</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%94%8E%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #16181d; --muted: #5c6370; --line: #e2e5ea;
+      --accent: #2f5bea; --ok: #167a4b; --warn: #9a6700; --bad: #b4232c;
+      --panel: #f7f8fa;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14161a; --fg: #e8eaed; --muted: #9aa2ad; --line: #2b2f36;
+        --accent: #7d9bff; --ok: #4cc38a; --warn: #d9a441; --bad: #f0787f;
+        --panel: #1b1e24;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 720px; margin: 0 auto; padding: 32px 16px 64px;
+      background: var(--bg); color: var(--fg); line-height: 1.5;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 24px; font-size: 0.9rem; }
+    label { display: block; font-weight: 600; font-size: 0.85rem; margin: 16px 0 4px; }
+    .hint { font-weight: 400; color: var(--muted); }
+    textarea {
+      width: 100%; padding: 10px; font: inherit; font-size: 0.9rem;
+      background: var(--bg); color: var(--fg);
+      border: 1px solid var(--line); border-radius: 6px; resize: vertical;
+    }
+    textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .actions { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+    button {
+      font: inherit; font-weight: 600; padding: 9px 18px; border-radius: 6px;
+      border: 1px solid transparent; cursor: pointer;
+    }
+    #run { background: var(--accent); color: #fff; }
+    #cancel { background: transparent; color: var(--fg); border-color: var(--line); }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .status { font-size: 0.85rem; color: var(--muted); }
+    .banner {
+      margin-top: 20px; padding: 12px 14px; border-radius: 6px;
+      border: 1px solid var(--line); background: var(--panel); font-size: 0.9rem;
+    }
+    .banner.bad { border-color: var(--bad); color: var(--bad); }
+    .banner.warn { border-color: var(--warn); color: var(--warn); }
+    .kpis {
+      display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 24px 0 0;
+      padding: 14px; border: 1px solid var(--line); border-radius: 6px;
+      background: var(--panel); font-size: 0.85rem;
+    }
+    .kpi b { display: block; font-size: 1.05rem; font-weight: 700; }
+    .kpi span { color: var(--muted); }
+    h2 { font-size: 1rem; margin: 28px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+    .brief p { margin: 0 0 10px; }
+    .brief ul, .sources, .failures { margin: 0 0 10px; padding-left: 20px; }
+    .sources li, .failures li { word-break: break-all; font-size: 0.9rem; }
+    .failures li { color: var(--bad); }
+    code { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Research Runs</h1>
+  <p class="sub">Submit a prompt and source URLs. The run happens in the background; this page polls until it finishes.</p>
+
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt" rows="2" maxlength="2000"
+            placeholder="What do you want researched?"></textarea>
+
+  <label for="urls">Sources <span class="hint">— one URL per line, http(s) only</span></label>
+  <textarea id="urls" rows="5"
+            placeholder="https://example.com/article&#10;https://example.org/report"></textarea>
+
+  <div class="actions">
+    <button id="run" type="button">Run</button>
+    <button id="cancel" type="button" hidden>Cancel</button>
+    <span class="status" id="status" role="status" aria-live="polite"></span>
+  </div>
+
+  <div id="banner" class="banner" hidden></div>
+  <div id="output"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Same-origin when the page is served by the API (no CORS in the request
+  // path at all). Falls back to the local API when opened straight from disk,
+  // where location.origin is the string "null". ?api=… overrides both.
+  var API = (function () {
+    var override = new URLSearchParams(location.search).get("api");
+    if (override) { return override.replace(/\/+$/, ""); }
+    if (location.protocol === "http:" || location.protocol === "https:") { return ""; }
+    return "http://localhost:8000";
+  })();
+
+  var POLL_INTERVAL_MS = 1000;
+  var POLL_MAX_BACKOFF_MS = 8000;
+  var MAX_CONSECUTIVE_ERRORS = 5;   // ride out a blip; give up on a real outage
+  var OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
+  var REQUEST_TIMEOUT_MS = 15000;
+  var MAX_URLS = 20;
+
+  var els = {
+    prompt: document.getElementById("prompt"),
+    urls: document.getElementById("urls"),
+    run: document.getElementById("run"),
+    cancel: document.getElementById("cancel"),
+    status: document.getElementById("status"),
+    banner: document.getElementById("banner"),
+    output: document.getElementById("output")
+  };
+
+  // One place holding everything a run owns, so starting or stopping a run
+  // cannot leave a timer or a request behind. The original called setInterval
+  // and never cleared it: every run leaked a timer that polled forever, and
+  // two runs raced to write the same element.
+  var active = null;
+
+  // ---- DOM helpers: text only, never innerHTML -----------------------------
+  // The brief is model output and the sources are user input. Both are
+  // attacker-influenced, so they are only ever inserted as text nodes.
+
+  function el(tag, text, className) {
+    var node = document.createElement(tag);
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    if (className) { node.className = className; }
+    return node;
+  }
+
+  function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
+
+  function setStatus(text) { els.status.textContent = text || ""; }
+
+  function showBanner(message, kind) {
+    els.banner.textContent = message;
+    els.banner.className = "banner" + (kind ? " " + kind : "");
+    els.banner.hidden = false;
+  }
+
+  function hideBanner() { els.banner.hidden = true; els.banner.textContent = ""; }
+
+  // ---- formatting ----------------------------------------------------------
+
+  function pct(value) {
+    return typeof value === "number" && isFinite(value)
+      ? Math.round(value * 100) + "%" : "—";
+  }
+
+  function num(value) {
+    return typeof value === "number" && isFinite(value)
+      ? value.toLocaleString() : "—";
+  }
+
+  function seconds(ms) {
+    return typeof ms === "number" && isFinite(ms) ? (ms / 1000).toFixed(1) + "s" : "—";
+  }
+
+  function localTime(iso) {
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? String(iso || "—") : d.toLocaleString();
+  }
+
+  // ---- validation (mirrors the server, to save a round trip) ---------------
+
+  function parseUrls(raw) {
+    var seen = Object.create(null);
+    var out = [];
+    raw.split("\n").forEach(function (line) {
+      var url = line.trim();
+      if (!url || seen[url.toLowerCase()]) { return; }
+      seen[url.toLowerCase()] = true;
+      out.push(url);
+    });
+    return out;
+  }
+
+  function validate(prompt, urls) {
+    if (!prompt) { return "Enter a prompt."; }
+    if (prompt.length > 2000) { return "Prompt is longer than 2000 characters."; }
+    if (!urls.length) { return "Add at least one source URL."; }
+    if (urls.length > MAX_URLS) { return "At most " + MAX_URLS + " URLs per run."; }
+    for (var i = 0; i < urls.length; i++) {
+      if (!/^https?:\/\/\S+$/i.test(urls[i])) {
+        return "Not a valid http(s) URL: " + urls[i];
+      }
+    }
+    return null;
+  }
+
+  // ---- fetch with a timeout ------------------------------------------------
+  // A fetch with no timeout can hang until the browser gives up, leaving the
+  // button disabled and the page looking frozen.
+
+  function request(path, options) {
+    options = options || {};
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
+    if (options.signal) {
+      options.signal.addEventListener("abort", function () { controller.abort(); });
+    }
+    return fetch(API + path, {
+      method: options.method || "GET",
+      headers: options.headers,
+      body: options.body,
+      signal: controller.signal
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var body = null;
+        try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
+        return { ok: res.ok, status: res.status, body: body, raw: text };
+      });
+    }).finally(function () { clearTimeout(timer); });
+  }
+
+  function messageFor(res, fallback) {
+    if (res.body && typeof res.body.error === "string") {
+      var detail = res.body.detail;
+      if (Array.isArray(detail) && detail.length && detail[0] && detail[0].message) {
+        return res.body.error + " " + detail.map(function (d) {
+          return (d.field ? d.field + ": " : "") + d.message;
+        }).join("; ");
+      }
+      return res.body.error;
+    }
+    return fallback + " (HTTP " + res.status + ")";
+  }
+
+  // ---- run lifecycle -------------------------------------------------------
+
+  function stopRun() {
+    if (!active) { return; }
+    clearTimeout(active.timer);
+    active.aborter.abort();
+    active = null;
+    els.run.disabled = false;
+    els.cancel.hidden = true;
+  }
+
+  function startRun() {
+    var prompt = els.prompt.value.trim();
+    var urls = parseUrls(els.urls.value);
+
+    var problem = validate(prompt, urls);
+    if (problem) { showBanner(problem, "bad"); setStatus(""); return; }
+
+    stopRun();               // never leave a previous run's timer running
+    hideBanner();
+    clear(els.output);
+    els.run.disabled = true; // the original allowed a second run per click
+    setStatus("Starting…");
+
+    var session = {
+      runId: null,
+      timer: null,
+      aborter: new AbortController(),
+      startedAt: Date.now(),
+      errorStreak: 0,
+      backoff: POLL_INTERVAL_MS
+    };
+    active = session;
+
+    request("/runs", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Makes a double submit (or a retried POST) reuse the same run
+        // instead of paying for a second one.
+        "Idempotency-Key": "web-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10)
+      },
+      body: JSON.stringify({ prompt: prompt, urls: urls }),
+      signal: session.aborter.signal
+    }).then(function (res) {
+      if (active !== session) { return; }
+      if (!res.ok || !res.body || !res.body.run_id) {
+        var retryAfter = res.status === 429 ? " Try again in a few seconds." : "";
+        showBanner(messageFor(res, "Could not start the run.") + retryAfter, "bad");
+        stopRun();
+        return;
+      }
+      session.runId = res.body.run_id;
+      els.cancel.hidden = false;
+      setStatus("Running… (" + urls.length + " source" + (urls.length === 1 ? "" : "s") + ")");
+      schedulePoll(session, POLL_INTERVAL_MS);
+    }).catch(function (err) {
+      if (active !== session) { return; }
+      console.error("[runs] start failed", err);
+      showBanner(
+        err && err.name === "AbortError"
+          ? "The request timed out. Is the backend running on " + (API || location.origin) + "?"
+          : "Could not reach the backend at " + (API || location.origin) + ".",
+        "bad"
+      );
+      stopRun();
+    });
+  }
+
+  function schedulePoll(session, delay) {
+    session.timer = setTimeout(function () { poll(session); }, delay);
+  }
+
+  function poll(session) {
+    if (active !== session) { return; }   // superseded or cancelled
+
+    if (Date.now() - session.startedAt > OVERALL_TIMEOUT_MS) {
+      showBanner("Gave up waiting after 5 minutes. The run may still finish; " +
+                 "check GET /runs/" + session.runId + ".", "warn");
+      setStatus("");
+      stopRun();
+      return;
+    }
+
+    request("/runs/" + encodeURIComponent(session.runId), { signal: session.aborter.signal })
+      .then(function (res) {
+        if (active !== session) { return; }
+
+        if (res.status === 404) {
+          showBanner("That run is no longer available — it may have expired.", "bad");
+          setStatus("");
+          stopRun();
+          return;
+        }
+        if (!res.ok || !res.body) {
+          throw new Error("HTTP " + res.status);
+        }
+
+        session.errorStreak = 0;
+        session.backoff = POLL_INTERVAL_MS;
+
+        var data = res.body;
+        if (data.status === "running") {
+          setStatus("Running…");
+          schedulePoll(session, POLL_INTERVAL_MS);
+          return;
+        }
+
+        // Terminal: stop polling. The original kept polling forever.
+        stopRun();
+        setStatus("");
+        if (data.status === "done" && data.result) {
+          render(data);
+        } else if (data.status === "cancelled") {
+          showBanner("Run cancelled.", "warn");
+        } else {
+          showBanner(
+            (data.error || "The run failed.") +
+            (data.error_code ? " [" + data.error_code + "]" : ""), "bad");
+        }
+      })
+      .catch(function (err) {
+        if (active !== session) { return; }
+        session.errorStreak += 1;
+        console.error("[runs] poll failed (" + session.errorStreak + ")", err);
+
+        if (session.errorStreak >= MAX_CONSECUTIVE_ERRORS) {
+          showBanner("Lost contact with the backend after " + MAX_CONSECUTIVE_ERRORS +
+                     " attempts. The run may still be going.", "bad");
+          setStatus("");
+          stopRun();
+          return;
+        }
+        // Back off rather than hammering a struggling backend every second.
+        session.backoff = Math.min(session.backoff * 2, POLL_MAX_BACKOFF_MS);
+        setStatus("Connection problem — retrying…");
+        schedulePoll(session, session.backoff);
+      });
+  }
+
+  function cancelRun() {
+    if (!active || !active.runId) { stopRun(); return; }
+    var runId = active.runId;
+    setStatus("Cancelling…");
+    request("/runs/" + encodeURIComponent(runId), { method: "DELETE" })
+      .catch(function (err) { console.error("[runs] cancel failed", err); })
+      .finally(function () {
+        stopRun();
+        setStatus("");
+        showBanner("Run cancelled.", "warn");
+      });
+  }
+
+  // ---- rendering -----------------------------------------------------------
+
+  function kpi(value, label) {
+    var box = el("div", null, "kpi");
+    box.appendChild(el("b", value));
+    box.appendChild(el("span", label));
+    return box;
+  }
+
+  function renderBrief(text) {
+    // The model returns markdown-ish text. Bullets become list items and
+    // everything else becomes a paragraph — built as text nodes, so nothing
+    // in the model's output can become markup.
+    var container = el("div", null, "brief");
+    var list = null;
+    String(text).split("\n").forEach(function (line) {
+      var trimmed = line.trim();
+      if (!trimmed) { list = null; return; }
+      var bullet = /^[-*•]\s+/.test(trimmed);
+      if (bullet) {
+        if (!list) { list = el("ul"); container.appendChild(list); }
+        list.appendChild(el("li", trimmed.replace(/^[-*•]\s+/, "")));
+      } else {
+        list = null;
+        container.appendChild(el("p", trimmed));
+      }
+    });
+    return container;
+  }
+
+  function render(data) {
+    var r = data.result;
+    clear(els.output);
+
+    if (typeof r.pages_failed === "number" && r.pages_failed > 0) {
+      showBanner(
+        r.pages_failed + " of " + r.pages_scraped +
+        " source(s) could not be scraped. The brief uses the rest.", "warn");
+    } else {
+      hideBanner();
+    }
+
+    var kpis = el("div", null, "kpis");
+    kpis.appendChild(kpi(num(r.pages_succeeded) + " / " + num(r.pages_scraped), "pages scraped"));
+    kpis.appendChild(kpi(pct(r.success_rate), "success rate"));
+    kpis.appendChild(kpi(num(r.tokens_used), "tokens used"));
+    kpis.appendChild(kpi(seconds(r.duration_ms), "duration"));
+    els.output.appendChild(kpis);
+
+    els.output.appendChild(el("h2", "Brief"));
+    els.output.appendChild(renderBrief(r.brief));
+
+    els.output.appendChild(el("h2", "Sources (" + (r.sources || []).length + ")"));
+    var sources = el("ul", null, "sources");
+    (r.sources || []).forEach(function (url) {
+      var li = el("li");
+      // Only ever build a link from an http(s) URL. Assigning an unchecked
+      // string to .href makes "javascript:…" a one-click script execution, so
+      // anything else is shown as plain text. The server rejects such URLs on
+      // the way in; this is the second lock on the same door.
+      if (/^https?:\/\//i.test(url)) {
+        var a = el("a", url);
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer nofollow";
+        li.appendChild(a);
+      } else {
+        li.appendChild(el("span", url));
+      }
+      sources.appendChild(li);
+    });
+    els.output.appendChild(sources);
+
+    if (r.failures && r.failures.length) {
+      els.output.appendChild(el("h2", "Failed sources (" + r.failures.length + ")"));
+      var failures = el("ul", null, "failures");
+      r.failures.forEach(function (f) {
+        failures.appendChild(el("li", f.url + " — " + (f.kind || "error")));
+      });
+      els.output.appendChild(failures);
+    }
+
+    var meta = el("p", null, "status");
+    meta.appendChild(el("span", "Run " + data.run_id + " · finished " +
+      localTime(data.finished_at || r.timestamp)));
+    els.output.appendChild(meta);
+  }
+
+  // ---- wiring --------------------------------------------------------------
+
+  els.run.addEventListener("click", startRun);
+  els.cancel.addEventListener("click", cancelRun);
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !els.run.disabled) { startRun(); }
+  });
+  // Abort in-flight work if the page goes away mid-run.
+  window.addEventListener("pagehide", stopRun);
+})();
+</script>
+</body>
+</html>
