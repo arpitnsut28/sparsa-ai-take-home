@@ -17,7 +17,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload          # http://localhost:8000
 ```
 
-Then **open <http://localhost:8000/>** — the API serves the page itself, so the
+Then **open <http://localhost:8000/>** the API serves the page itself, so the
 browser makes same-origin calls and CORS never enters the picture.
 
 Opening `frontend.html` from disk also works (`Origin: null` is allowed outside
@@ -54,7 +54,7 @@ LOG_FORMAT=json uvicorn main:app                 # structured logs
 | `GET`  | `/runs`          | Recent runs, newest first (`?limit=&offset=`). |
 | `DELETE` | `/runs/{id}`   | Cancel an in-flight run. `409` once terminal. |
 | `GET`  | `/health`        | Liveness. |
-| `GET`  | `/ready`         | Readiness — `503` while draining or at capacity. |
+| `GET`  | `/ready`         | Readiness `503` while draining or at capacity. |
 | `GET`  | `/metrics`       | Counters and run-duration percentiles. |
 | `GET`  | `/docs`          | OpenAPI UI. |
 
@@ -92,13 +92,13 @@ backend/
   services/
     run_service.py        run lifecycle: admission, execution, cancel, drain
     pipeline.py           scrape → dedupe → synthesise → KPI row
-    scraper/llm stubs     stubs.py — the only module that touches externals
+    scraper/llm stubs     stubs.py  the only module that touches externals
     urls.py               URL canonicalisation + SSRF guard
     store.py              bounded, TTL'd run store
     ratelimit.py          per-client token bucket
     retry.py              timeout + bounded retry with jittered backoff
   tests/                  118 tests
-frontend.html             the page — vanilla, no build step
+frontend.html             the page  vanilla, no build step
 SIGNOFF.md                is it production-ready, what changed, what I'd block on
 DECISION_LOG.md           one line per meaningful AI interaction
 ```
