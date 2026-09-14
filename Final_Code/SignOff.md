@@ -4,9 +4,9 @@
 
 ## Summary
 
-I reviewed the Research Runs feature with a focus on real-world failure cases, concurrency, security, and reliability. I fixed issues with stuck background tasks, concurrent runs, invalid run IDs, blocking operations, failed sources, token tracking, and ensuring scraped content is actually passed to the LLM. I also added timeouts, retries, input validation, SSRF protection, rate limiting, idempotency, structured logging, health/readiness checks, and improved the frontend error and polling handling.
+I reviewed the Research Runs feature with a focus on real-world failure cases, concurrency, security and reliability. I fixed issues with stuck background tasks, concurrent runs, invalid run IDs, blocking operations, failed sources, token tracking, and ensuring scraped content is actually passed to the LLM. I also added timeouts, retries, input validation, SSRF protection, rate limiting, idempotency, structured logging, health/readiness checks, and improved the frontend error and polling handling.
 
-I verified the changes with 118 automated tests covering concurrency, failures, timeouts, URL validation, cancellation, rate limiting, idempotency, and frontend behaviour. I also tested the backend and frontend together to make sure the complete flow works correctly. Based on this testing, I'm comfortable signing off the feature as production-ready for the scope of this assignment.
+I verified the changes with 118 automated tests covering concurrency, failures, timeouts, URL validation, cancellation, rate limiting, idempotency and frontend behaviour. I also tested the backend and frontend together to make sure the complete flow works correctly. Based on this testing, I'm comfortable signing off the feature as production-ready for the scope of this assignment.
 
 ## Key Change: Failure Visibility
 
