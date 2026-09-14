@@ -88,19 +88,23 @@ backend/
   config.py               every tunable, read from the environment
   models.py               request/response schemas and validation
   observability.py        structured logging, request correlation, counters
-  api/routes.py           HTTP surface only
+  api/
+    routes.py             HTTP surface only
   services/
     run_service.py        run lifecycle: admission, execution, cancel, drain
     pipeline.py           scrape → dedupe → synthesise → KPI row
-    scraper/llm stubs     stubs.py  the only module that touches externals
+    scraper/
+      stubs.py            stubs; the only module that touches externals
     urls.py               URL canonicalisation + SSRF guard
     store.py              bounded, TTL'd run store
     ratelimit.py          per-client token bucket
     retry.py              timeout + bounded retry with jittered backoff
   tests/                  118 tests
-frontend.html             the page  vanilla, no build step
-SIGNOFF.md                is it production-ready, what changed, what I'd block on
-DECISION_LOG.md           one line per meaningful AI interaction
+
+frontend.html             the page vanilla, no build step
+DecisionLog.md            one line per meaningful AI interaction
+SignOff.md                is it production-ready, what changed, what I'd block on
+README.md
 ```
 
 ## Configuration
